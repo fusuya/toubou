@@ -1,5 +1,4 @@
 
-(load "item.lisp" :external-format :utf-8)
 (load "maze-test.lisp")
 (load "ai-ido.lisp")
 (defparameter *tate* 11) ;;マップサイズ
