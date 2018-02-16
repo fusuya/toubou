@@ -1,5 +1,6 @@
 ﻿# 逃亡中
 ハンターから逃げ延びよ！
+usocket使って４人対戦で最後まで生き延びた人が勝ちみたいなゲームにしたい  
 
 ・sbcl持ってる人はload.lispをloadするとゲーム始まると思います。(quicklisp必要)
 ・roswellインストールしてあればros -l load.lispで始まると思います  
