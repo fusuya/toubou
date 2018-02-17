@@ -104,13 +104,6 @@ CL-USER 10 > (minimum '((a 1) (b -1) (c -2)) #'< #'second)
 (defun lookup (key alist)
   (cdr (assoc key alist :test #'equal)))
 
-;; (defparameter *alist-list* '((("ai-id" . 1) ("name" "もげ"))
-;; 			     (("ai-id" . 2) ("name" "こげ"))))
-  
-  ;; (print
-  ;;  (lookup "ai-id" '(("ai-id" 1))))
-  ;; (print
-  ;;  (find-if (lambda (alist) (= 1 (lookup "ai-id" alist))) *alist-list*))
 (defun make-paths (pos p-pos other-ais blocks)
   (dolist (ai other-ais)
     (alist-bind
@@ -124,21 +117,26 @@ CL-USER 10 > (minimum '((a 1) (b -1) (c -2)) #'< #'second)
 	(print-dir pos (car path))
 	(format nil "UP"))))
 
+(defun pos->xy (pos)
+  (alist-bind
+   (x y) pos
+   (list x y)))
+
 ;;移動モード
 (defun map-mode (data id)
-	      
-  (let* ((blocks  (lookup "blocks" data))
-	 (player  (lookup "player" data))
-	 (p-posxy (lookup "pos" player))
-	 (p-posx  (lookup "x"   p-posxy))
-	 (p-posy  (lookup "y"   p-posxy))
-	 (p-pos   (list p-posx p-posy))
-	 (ais     (lookup "ais"    data))
-	 (my-info (find-if (lambda (alist) (= id (lookup "id" alist))) ais))
-	 (other-ais (remove my-info ais :test #'equal))
-	 (posxy   (lookup "pos" my-info))
-	 (posx    (lookup "x"   posxy))
-	 (posy    (lookup "y"   posxy))
-	 (pos     (list posx posy)))
-    (make-paths pos p-pos other-ais blocks)))
-    
+  (alist-bind
+   (blocks players hunters) data
+   (let* ((me (find-if (lambda (alist) (= id (lookup "id" alist))) hunters))
+          (other-hunters (remove me hunters :test #'equal))
+          (myxy (pos->xy (lookup "pos" me)))
+          (live-players (remove-if (lambda (p) (lookup "dead" p)) players))
+          (min-distance (loop for p in live-players
+                              minimize
+                              (manhatan myxy (pos->xy (lookup "pos" p)))))
+          (target (find-if
+                   (lambda (p)
+                     (= min-distance (manhatan myxy
+                                               (pos->xy (lookup "pos" p)))))
+                   live-players))
+          (targetxy (pos->xy (lookup "pos" target))))
+     (make-paths myxy targetxy other-hunters blocks))))
