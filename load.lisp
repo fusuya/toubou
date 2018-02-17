@@ -1,7 +1,7 @@
-(ql:quickload (list :jonathan :cl-ppcre :ltk))
+(ql:quickload '(:jonathan :cl-ppcre :ltk :usocket))
 
 (defpackage :toubou
-  (:use :common-lisp :cl-user :ltk)
+  (:use :common-lisp :cl-user :ltk :sb-bsd-sockets)
   (:export #:gui-main))
 (in-package :toubou)
 
