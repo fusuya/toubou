@@ -1,4 +1,4 @@
-(ql:quickload '(:jonathan :cl-ppcre :ltk :usocket))
+(ql:quickload '(:jonathan :cl-ppcre :ltk))
 
 (defpackage clilin
    (:use :common-lisp :cl-user :ltk :sb-bsd-sockets)
@@ -6,11 +6,13 @@
 (in-package :clilin)
 
 
-(defun make-socket-stream ()
+(defun make-socket-stream (address port)
   (let ((sock (make-instance 'inet-socket :type :stream :protocol :tcp))
-        (addr (make-inet-address "127.0.0.1")))
-    (socket-connect sock addr 9999)
-    (socket-make-stream sock :input t :output t :element-type 'character)))
+        (addr (make-inet-address address)))
+    (if (ignore-errors (socket-connect sock addr port)
+		       t)
+	(socket-make-stream sock :input t :output t :element-type 'character)
+	nil)))
 
 ;; 文字列をキーとする連想リストの各値をキーと同名の変数に束縛する。
 ;; (alist-bind (a b c) '(("a" . 1) ("b" . 2))
@@ -79,12 +81,19 @@
     (configure *tk* :padx 16 :pady 16)
     (let* (;; ウィジェット。
 	   (f (make-instance 'frame))
-	   (fr1 (make-instance 'labelframe :master f :text "画面"))
-	   (gamen  (make-instance 'label :master fr1
+	   (f2 (make-instance 'frame))
+	   (lf1 (make-instance 'labelframe :master f :text "アドレス"))
+	   (lf2 (make-instance 'labelframe :master f :text "ポート"))
+	   (lf3 (make-instance 'labelframe :master f :text "名前"))
+	   (addr (make-instance 'entry :master lf1 :width 13 :text "10.0.2.15"))
+	   (port (make-instance 'entry :master lf2 :width 7 :text "9999"))
+	   (name (make-instance 'entry :master lf3 :width 12 :text "もげ"))
+	   (fr1 (make-instance 'labelframe :master f2 :text "画面"))
+	   (gamen  (make-instance 'label :master fr1 :text "hoge"
 					 :font "Takaoゴシック 14 normal"))
-	   (stream (make-socket-stream))
-	   (id 0) (state 'hoge)
-	   (start-btn (make-instance 'button :master f :text "スタート")))
+	   (stream nil);;(make-socket-stream))
+	   (id nil) (state 'playing)
+	   (start-btn (make-instance 'button :master f :text "接続")))
       (labels
 	  ((update-screen (data)
 	     (setf (text gamen)
@@ -100,18 +109,28 @@
 	     ;;(sleep 0.03)
 	     ;;(after-idle #'iter)
 	     ))
-	
-	(pack f)
+	(pack (list f f2))
+	(pack (list lf1 lf2 lf3 start-btn) :side :left)
+	(pack (list addr port name))
 	(pack fr1)
-	(pack start-btn)
 	(pack gamen)
 	(setf (command start-btn)
 	      (lambda ()
-		(format stream "クリリン~%")
-		(force-output stream)
-		(setf id (parse-integer (read-line stream))
-		      state 'playing)
-		(iter)))
+		(setf stream (make-socket-stream (format nil "~a" (text addr))
+						 (parse-integer (format nil "~a" (text port)))))
+		(if stream
+		    (progn
+		      (format stream "~a~%" (text name))
+		      (force-output stream)
+		      
+		      
+		      (setf id (parse-integer (read-line stream)))
+		      (setf (text gamen)
+			    "受付完了：ゲーム開始待ち中")
+		      (process-events)
+		      (iter))
+		    (setf (text gamen)
+			  "だめぽ"))))
 
 	;;キー入力イベント
 	(mapc (lambda (key cmd)
@@ -125,6 +144,7 @@
 	      '("RIGHT" "LEFT" "UP" "DOWN" "STAY"))
 	;;ループ
 	;;(after-idle #'iter)
-	(mainloop)))))
+	;;(mainloop)
+	))))
 
 (gui-cli)
