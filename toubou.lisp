@@ -264,6 +264,8 @@
              (player-name rp)))
    (sb-int:simple-stream-error
     (c)
+    (declare (ignore c))
+
     (v:error :network "~aとの接続をクローズ時にストリームエラー。" (player-name rp)))))
 
 ;; handshake-error が発生する。
@@ -347,6 +349,8 @@
 
      (sb-int:simple-stream-error
       (c)
+      (declare (ignore c))
+
       (v:error :network "~aへのメッセージ送信時にストリームエラー。" (player-name rp))))))
 
 (defun make-ranking-data (g)
@@ -405,11 +409,15 @@
                  (remote-player-receive-name player)
                  (handshake-error
                   (c)
+                  (declare (ignore c))
+
                   (v:error :network "~aとのハンドシェイクに失敗。" (socket-peername-string client))
                   (remote-player-close-stream player)
                   (return-from player-registration))
                  (sb-sys:io-timeout
                   (c)
+                  (declare (ignore c))
+
                   (v:error :network "~aとのハンドシェイク中にタイムアウト。" (socket-peername-string client))
                   (remote-player-close-stream player)
                   (return-from player-registration)))
