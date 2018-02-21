@@ -5,14 +5,29 @@
    (:export #:gui-cli))
 (in-package :clilin)
 
+(defun looks-like-ip (str)
+  (every (lambda (c)
+           (case c
+             ((#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9 #\.) t)
+             (t nil))) str))
 
 (defun make-socket-stream (address port)
   (let ((sock (make-instance 'inet-socket :type :stream :protocol :tcp))
-        (addr (make-inet-address address)))
-    (if (ignore-errors (socket-connect sock addr port)
-		       t)
-	(socket-make-stream sock :input t :output t :element-type 'character)
-	nil)))
+        (addr (if (looks-like-ip address)
+                  (make-inet-address address)
+                (handler-case
+                 (car (host-ent-addresses (get-host-by-name address)))
+
+                 (host-not-found-error
+                  (c)
+                  (declare (ignore c))
+
+                  (do-msg (format nil "ホスト~aのIPアドレスがわかりませんでした。" address))
+                  (return-from make-socket-stream nil))))))
+
+    (if (ignore-errors (socket-connect sock addr port) t)
+        (socket-make-stream sock :input t :output t :element-type 'character)
+      nil)))
 
 ;; 文字列をキーとする連想リストの各値をキーと同名の変数に束縛する。
 ;; (alist-bind (a b c) '(("a" . 1) ("b" . 2))
@@ -71,10 +86,7 @@
        (fresh-line out)))))
 
 (defun read-message (stream)
-  (let ((message (jonathan:parse (read-line stream) :as :alist)))
-    (print message)
-    (terpri)
-    message))
+  (jonathan:parse (read-line stream) :as :alist))
 
 (defun message-type (message)
   (intern (map 'string #'char-upcase (lookup "type" message))))
@@ -92,7 +104,6 @@
             (configure *tk* :padx 16 :pady 16)
             (let* ((stream nil)
                    (id nil)
-                   (state 'playing)
                    (command nil)
 
                    ;; ウィジェット。
