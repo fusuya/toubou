@@ -1,14 +1,13 @@
-(ql:quickload '(:jonathan :cl-ppcre :ltk :usocket))
+(ql:quickload '(:jonathan :cl-ppcre :usocket :verbose))
 
 (defpackage :toubou
-  (:use :common-lisp :cl-user :ltk :sb-bsd-sockets)
+  (:use :common-lisp :cl-user :sb-bsd-sockets)
   (:export #:gui-main))
 (in-package :toubou)
 
 (load "toubou.lisp" :external-format :utf-8)
 
-
-(gui-main)
+(server-main)
 #|
 (sb-ext:save-lisp-and-die "mogerpg"
 			  :toplevel #'main

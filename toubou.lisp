@@ -25,10 +25,12 @@
 ;; プレーヤーの初期位置。5人目が参加するときっとクラッシュする。
 (defparameter *player-id-pos* '((1 1) (11 1) (1 11) (11 11)))
 
+(defconstant +client-read-timeout+ 10)
+(defconstant +registration-timeout+ 30) ;;一人目の参加から何秒でゲームを開始するか。
+
 (defstruct actor
   (posy 1)
   (posx 1)
-  (dead? nil)
   (name nil)
   (atama nil))
 
@@ -36,6 +38,7 @@
   (id nil))
 
 (defstruct (player (:include actor))
+  (last-turn-alive nil)
   (command nil)
   (id nil))
 
@@ -79,8 +82,8 @@
        (format nil "~C" (ascii->zenkaku atama))))))
 
 ;;プレイヤーの生死判定
-(defun player-dead (p)
-  (player-dead? p))
+(defun player-dead? (p)
+  (if (player-last-turn-alive p) t nil))
 
 ;;n内の１以上の乱数
 (defun randval (n)
@@ -102,6 +105,8 @@
 
 (defun player-list (p)
   `(:|id| ,(player-id p)
+     :|name| ,(player-name p)
+     :|atama| ,(player-atama p)
      :|pos| (:|x| ,(player-posx p) :|y| ,(player-posy p))
      :|dead| ,(json-true-false (player-dead? p))))
 
@@ -116,6 +121,9 @@
                   (5  (push (list j i) su)))))
     `(:|blocks| ,blocks :|su| ,su)))
 
+(defun make-error-message (&key reason message)
+  `(:|type| "error" :|reason| ,reason :|message| ,message))
+
 (defun make-hunters-data (hunters)
   (list :|hunters|
         (loop for h in hunters
@@ -123,8 +131,9 @@
 
 (defun make-map-data (g)
   (append `(:|type| "map")
+          `(:|turn| ,(game-turn g))
           (map-data-list (game-donjon g))
-          `(:|players| ,(mapcar (lambda (p) (player-list p)) (game-players g)))
+          `(:|players| ,(mapcar #'player-list (game-players g)))
           (make-hunters-data (game-hunters g))))
 
 ;;敵と重なったか
@@ -137,26 +146,31 @@
 
 ;;マップ表示
 (defmethod game-show ((g game) out)
-  (labels ((show-turn () (format out "ターン:~d~%" (game-turn g)))
-           (show-map ()
-                     (let ((actors (append (game-players g) (game-hunters g))))
-                       (loop for i from 0 below (donjon-tate (game-donjon g))
-                             do
-                             (loop for j from 0 below (donjon-yoko (game-donjon g))
-                                   do
-                                   (let ((actor (find-if #'(lambda (a) (and (= i (actor-posy a)) (= j (actor-posx a))))
-                                                         actors)))
-                                     (if actor
-                                         (format out
-                                                 (if (actor-dead? actor) "墓" (actor-atama actor)))
-                                       (format out (map-type (aref (donjon-map (game-donjon g)) i j))))))
-                             (fresh-line out))))
-           (format-command (command)
-                           (if command command ""))
-           (show-players ()
-                         (format out "プレーヤー:~%")
-                         (dolist (p (game-players g))
-                           (format out "~a ~a ~a~%" (player-id p) (player-name p) (format-command (player-command p))))))
+  (labels ((show-turn
+            ()
+            (format out "ターン:~d~%" (game-turn g)))
+           (show-map
+            ()
+            (let ((actors (append (game-players g) (game-hunters g))))
+              (loop for i from 0 below (donjon-tate (game-donjon g))
+                    do
+                    (loop for j from 0 below (donjon-yoko (game-donjon g))
+                          do
+                          (let ((actor (find-if #'(lambda (a) (and (= i (actor-posy a)) (= j (actor-posx a))))
+                                                actors)))
+                            (if actor
+                                (format out
+                                        (if (actor-dead? actor) "墓" (actor-atama actor)))
+                              (format out (map-type (aref (donjon-map (game-donjon g)) i j))))))
+                    (fresh-line out))))
+           (format-command
+            (command)
+            (if command command ""))
+           (show-players
+            ()
+            (format out "プレーヤー:~%")
+            (dolist (p (game-players g))
+              (format out "~a ~a ~a~%" (player-id p) (player-name p) (format-command (player-command p))))))
     (show-turn)
     (show-map)
     (show-players)))
@@ -183,14 +197,16 @@
 
 ;; リモートプレーヤーとの接続を切る。ゲーム終了時の後処理。
 (defun game-close-connections (g)
-  (dolist (rp (remove-if-not #'remote-player-p (game-players g)))
-    (close (remote-player-stream rp))))
+  (dolist (rp (game-remote-players g))
+    (remote-player-close-stream rp)))
+
 ;; 敵とプレーヤーの接触判定。当たると死ぬ。
 (defun game-encount (g)
   (dolist (p (game-players g))
     (if (and (not (player-dead? p))
              (encount-enemy p (game-hunters g)))
-        (setf (player-dead? p) t))))
+        (game-kill-player g p))))
+
 ;; プレーヤーが動く。全てのプレーヤーのコマンドが入力されてから呼び出
 ;; す。
 (defun game-move-players (g)
@@ -219,6 +235,7 @@
     (setf (non-blocking-mode s) t)
     (socket-bind s addr 9999)
     (socket-listen s 5)
+    (v:info :server "~aで接続受け付け開始。" (socket-name-string s))
     s))
 
 (defun chomp (line)
@@ -237,187 +254,243 @@
    (equal "DOWN" str)
    (equal "STAY" str)))
 
+(defmethod remote-player-close-stream ((rp remote-player))
+  (handler-case
+   (if (remote-player-stream rp)
+       (progn
+         (close (remote-player-stream rp))
+         (setf (remote-player-stream rp) nil))
+     (v:info :network "プレーヤー~aの存在しないストリームを閉じようとしました。"
+             (player-name rp)))
+   (sb-int:simple-stream-error
+    (c)
+    (declare (ignore c))
+
+    (v:error :network "~aとの接続をクローズ時にストリームエラー。" (player-name rp)))))
+
+;; handshake-error が発生する。
 (defmethod remote-player-receive-name (rp)
   (handler-case
    (let ((name (chomp (read-line (remote-player-stream rp)))))
      (when (equal name "")
-       (format t "AIの名前が空です。~%")
+       (v:error :network "AIの名前が空です。")
        (error 'handshake-error))
      (setf (player-name rp) name
            (player-atama rp) (atama-of name)))
    (end-of-file (c)
-                (format t "~A~%" c)
+                (v:error :network "~A" c)
                 (error 'handshake-error))))
+
+(defmethod remote-player-send-id (player)
+  (format (remote-player-stream player) "~a~%" (player-id player))
+  (finish-output (remote-player-stream player)))
+
+(defmethod remote-player-send-message ((rp remote-player) data)
+  (when (remote-player-stream rp)
+    (let ((json (jonathan:to-json data)))
+      (format (remote-player-stream rp) "~a~%" json)
+      (finish-output (remote-player-stream rp)))))
 
 ;; リモートプレーヤーから届いているコマンドを受け取る。
 (defun try-read-remote-commands (g)
-  (dolist (rp (game-players g))
-    (when (and (remote-player-p rp)
-               (not (player-command rp))
+  (dolist (rp (game-remote-players g))
+    (when (and (not (player-command rp))
                (listen (remote-player-stream rp)))
       ;; 読み込めるデータがある。1行全て読み込める
       ;; とは限らないが…。
+      (v:debug :game "プレーヤー~aからコマンドの読み込み開始。" (player-name rp))
       (let ((cmd (chomp (read-line (remote-player-stream rp)))))
+        (v:debug :game "プレーヤー~aからコマンドの読み込み完了。~a" (player-name rp) cmd)
         (if (valid-command? cmd)
-            (setf (player-command rp) cmd)
+            (progn
+              (when (player-command rp)
+                (v:warn :game "~aのコマンドは既に~aに設定されている。" (player-command rp)))
+              (setf (player-command rp) cmd))
           (progn
             (when (not (player-dead? rp))
-              (do-msg (format nil "プレーヤー「~s」は不正なコマンド「~s」により反則負け。"
-                              (player-name rp)
-                              cmd))
-              (setf (player-dead? rp) t))))))))
+              (v:info :game "プレーヤー「~s」は不正なコマンド「~s」により反則負け。" (player-name rp) cmd)
+              (remote-player-send-message rp (make-error-message :reason "protocol-error" :message (format nil "不正なコマンド~s" cmd)))
+              (remote-player-close-stream rp)
+              (game-kill-player g rp))))))))
+
 ;;リモートプレーヤーにゲーム状態のJSONを送る。
-(defun game-send-to-remote-players (g)
-  (let ((json (jonathan:to-json (make-map-data g))))
-    (dolist (rp (remove-if-not #'remote-player-p (game-players g)))
-      (format (remote-player-stream rp) "~a~%" json)
-      (force-output (remote-player-stream rp)))))
+(defun game-broadcast-map (g)
+  (game-broadcast-message g (make-map-data g)))
 
-;;GUI
-(defun gui-main ()
-  (with-ltk
-   ()
+(defun socket-name-string (sock)
+  (multiple-value-bind (addr port)
+      (socket-name sock)
+    (format nil "~a.~a.~a.~a:~a"
+            (aref addr 0)
+            (aref addr 1)
+            (aref addr 2)
+            (aref addr 3)
+            port)))
 
-   (let* ((server-socket (make-server-socket))
-          (local-player nil)
-          (g nil)
-          (app-state 'player-registration)
-          ;;     player-registration プレーヤー登録受け付け中。
-          ;;     playing ゲームプレイ中。
-          ;;     finished ゲーム終了。
+(defun socket-peername-string (sock)
+  (multiple-value-bind (addr port)
+      (socket-peername sock)
+    (format nil "~a.~a.~a.~a:~a"
+            (aref addr 0)
+            (aref addr 1)
+            (aref addr 2)
+            (aref addr 3)
+            port)))
 
-          ;; ウィジェット。
-          (f (make-instance 'frame))
-          (fr1 (make-instance 'labelframe :master f :text "画面"))
-          (gamen  (make-instance 'label :master fr1
-                                 :font "Takaoゴシック 14 normal"))
-          (start-btn (make-instance 'button :master f :text "スタート"))
-          (local-player-btn (make-instance 'button :master f :text "ローカルプレーヤー追加"))
-          (reset-btn (make-instance 'button :master f :text "リセット")))
+(defun new-game ()
+  (let ((first-hunter (make-hunter :id 0 :name "ハンター" :posx 6 :posy 6 :atama "ハ")))
+    (make-game :donjon (make-donjon :map *map*)
+               :hunters (list first-hunter))))
 
-     (labels ((init-game () ;; ゲーム初期化。
-                         (let ((first-hunter (make-hunter :id 0 :name "ハンター" :posx 6 :posy 6 :atama "ハ")))
-                           (setf g
-                                 (make-game :donjon (make-donjon :map *map*)
-                                            :hunters (list first-hunter)))))
-              (format-app-state (s)
-                                (case s
-                                  (player-registration "エントリー受け付け中")
-                                  (playing "プレイ中")
-                                  (finished "ゲーム終了")))
-              (update-screen ()
-                             (setf (text gamen)
-                                   (let ((out (make-string-output-stream)))
-                                     (format out "~a~%" (format-app-state app-state))
-                                     (game-show g out)
-                                     (get-output-stream-string out))))
-              (iter ()
-                    (case
-                        app-state
-                      (player-registration
-                       ;; プレーヤーとの接続が切れたら除外とかしたいけど動かない…。
-                       ;; (dolist (rp (remove-if-not #'remote-player-p (game-players g)))
-                       ;;   (when (not (socket-open-p (remote-player-socket rp)))
-                       ;;     (setf (game-players g) (remove rp (game-players g)))))
-                       (let ((client (socket-accept server-socket)))
-                         (when client
-                           ;; クライアントからの接続がある。
-                           (let* ((stream (socket-make-stream client :input t :output t :element-type 'character))
-                                  (player (make-remote-player :stream stream :socket client)))
-                             (remote-player-receive-name player)
-                             ;; XXX: 同名のプレーヤーは登録しない措置が必要か。
-                             (game-add-player g player)
-                             ;; プレーヤーIDを返す。
-                             (format (remote-player-stream player) "~a~%" (player-id player))
-                             (force-output (remote-player-stream player)))) ))
-                      (playing
-                       (try-read-remote-commands g)
-                       (if (every #'player-dead? (game-players g))
-                           (progn
-                             (setf app-state 'finished)
-                             (game-close-connections g))
-                         (progn
-                           ;; ゲーム状態の更新。
-                           (when (every (lambda (p) (player-command p)) (game-players g))
-                             (game-move-players g)
-                             (dolist (p (game-players g))
-                               (setf (player-command p) nil)) ;; プレーヤーのコマンドをクリア.
-                             (game-encount g) ;; 敵につっこんで死亡。
-                             ;; 全員死んでる状態で敵AIを動かすとコケるので。
-                             (when (not (every #'player-dead? (game-players g)))
-                               (game-move-hunters g)
-                               (game-encount g)) ;; 敵がつっこんできて死亡。
-                             ;; 敵を湧かす？
-                             ;; (when (zerop (mod (game-turn g) 20))
-                             ;;     (game-add-hunter g))
-                             (incf (game-turn g))
-                             (game-send-to-remote-players g)))))
-                      (finished
-                       ))
+(defun game-broadcast-message (g data)
+  (dolist (rp (game-remote-players g))
+    (handler-case
+     (remote-player-send-message rp data)
 
-                    ;; ゲーム状態の描画。
-                    (update-screen)
-                    (sleep 0.03)
-                    (after-idle #'iter)))
+     (sb-int:simple-stream-error
+      (c)
+      (declare (ignore c))
 
-       (setf *random-state* (make-random-state t))
-       (init-game)
+      (v:error :network "~aへのメッセージ送信時にストリームエラー。" (player-name rp))))))
 
-       (wm-title *tk* "GUI")
-       (bind *tk* "<Alt-q>"
-             (lambda (event)
-               (declare (ignore event))
-               (process-events)
-               (return-from gui-main)))
-       (set-geometry *tk* 600 600 200 200)
-       (configure *tk* :padx 16 :pady 16)
+(defun make-ranking-data (g)
+  (flet ((ranking-item
+          (p)
+          `(:|name| ,(player-name p) :|score| ,(player-last-turn-alive p))
+          ))
+    (mapcar #'ranking-item
+            (sort (game-players g) #'> :key #'player-last-turn-alive))))
 
-       (pack f)
-       (pack fr1)
-       (pack start-btn)
-       (pack gamen)
-       (pack local-player-btn)
-       (pack reset-btn)
+(defun game-broadcast-result (g)
+  (game-broadcast-message
+   g
+   `(:|type| "result"
+      :|ranking| ,(make-ranking-data g))))
 
-       (setf (command start-btn)
-             (lambda ()
-               (cond
-                ((not (eq 'player-registration app-state))
-                 (do-msg "新しいゲームを開始する前にリセットしてね。"))
-                ((zerop (length (game-players g)))
-                 (do-msg "プレーヤーが居ないので始められません。"))
-                (t
-                 (setf app-state 'playing)
-                 (game-send-to-remote-players g)))))
-       (setf (command local-player-btn)
-             (lambda ()
-               (if (eq app-state 'player-registration)
-                 (if (and local-player (find local-player (game-players g)))
-                     (do-msg "もうローカルプレーヤーは参加しています。")
-                   (progn
-                     (setf local-player (make-player :name "ワンコン" :atama "＠"))
-                     (game-add-player g local-player)))
-                 (do-msg "今は参加を受け付けていません。"))))
-       (setf (command reset-btn)
-             (lambda ()
-               (game-close-connections g)
-               (init-game)
-               (setf local-player nil
-                     app-state 'player-registration)))
+(defun game-broadcast-status (g timeout-seconds)
+  (game-broadcast-message g `(:|type| "status" :|timeout-seconds| ,timeout-seconds :|map| ,(make-map-data g))))
 
-       ;;キー入力イベント
-       (mapc (lambda (key cmd)
-               (bind *tk* key
-                     (lambda (event)
-                       (declare (ignore event))
-                       (when local-player
-                         (setf (player-command local-player) cmd)))))
-             '("<Right>" "<Left>" "<Up>" "<Down>" "<End>")
-             '("RIGHT" "LEFT" "UP" "DOWN" "STAY"))
+(defun game-end? (g)
+  (every #'player-dead? (game-players g)))
 
-       ;;ループ
-       (after-idle #'iter)
-       (mainloop)))))
+(defun game-kill-player (g p)
+  (setf (player-last-turn-alive p) (game-turn g)))
+
+(defun game-remote-players (g)
+  (remove-if-not #'remote-player-p (game-players g)))
+
+(defun server-main ()
+  (let* ((server-socket (make-server-socket))
+         (g (new-game))
+         ;; app-func:
+         ;;     player-registration プレーヤー登録受け付け中。
+         ;;     playing ゲームプレイ中。
+         (app-func nil)
+         ;; first-registration-time: 最初の参加者が登録した時刻。
+         (first-registration-time nil)
+         (turn-start-time nil))
+
+    (labels
+        ((player-registration
+          ()
+
+          ;; 1. プレーヤーの登録処理。
+          (let ((client (socket-accept server-socket)))
+            (when client
+              (v:info :network "クライアントから接続: ~a" (socket-peername-string client))
+              ;; クライアントからの接続がある。
+              (let* ((stream (socket-make-stream client
+                                                 :input t
+                                                 :output t
+                                                 :element-type 'character
+                                                 :timeout +client-read-timeout+))
+                     (player (make-remote-player :stream stream :socket client)))
+                (handler-case
+                 (remote-player-receive-name player)
+                 (handshake-error
+                  (c)
+                  (declare (ignore c))
+
+                  (v:error :network "~aとのハンドシェイクに失敗。" (socket-peername-string client))
+                  (remote-player-close-stream player)
+                  (return-from player-registration))
+                 (sb-sys:io-timeout
+                  (c)
+                  (declare (ignore c))
+
+                  (v:error :network "~aとのハンドシェイク中にタイムアウト。" (socket-peername-string client))
+                  (remote-player-close-stream player)
+                  (return-from player-registration)))
+                ;; XXX: 同名のプレーヤーは登録しない措置が必要か。
+                (game-add-player g player)
+                (when (not first-registration-time)
+                  (setf first-registration-time (get-internal-real-time)))
+                (v:info :game "プレーヤー~a(ID: ~a)を登録。" (player-name player) (player-id player))
+                (remote-player-send-id player)
+                (let ((timeout (- +registration-timeout+ (truncate (- (get-internal-real-time) first-registration-time) internal-time-units-per-second))))
+                  (game-broadcast-status g timeout)))))
+
+          ;; 2. 最初の参加から30秒あるいは4人揃っていたらゲーム開始。
+          (let ((sec (if first-registration-time
+                         (truncate (- (get-internal-real-time) first-registration-time) internal-time-units-per-second)
+                       0)))
+            (when (or (>= sec +registration-timeout+)
+                      (<= 4 (length (game-players g))))
+              (setf app-func #'playing)
+              (setf first-registration-time nil)
+              (v:info :game "ゲーム開始。")
+              (game-broadcast-map g))))
+
+         (playing
+          ()
+
+          (when (not turn-start-time)
+            (setf turn-start-time (get-internal-real-time)))
+
+          (let ((seconds-elapsed (truncate (- (get-internal-real-time) turn-start-time)
+                                           internal-time-units-per-second)))
+            (when (>= seconds-elapsed +client-read-timeout+)
+              (dolist (rp (game-remote-players g))
+                (when (and (not (player-dead? rp))
+                           (not (player-command rp)))
+                  (game-kill-player g rp)
+                  (remote-player-close-stream rp)
+                  (v:error :game "プレーヤー~aから~a秒以内にコマンドを受けとれなかったので死亡扱い。" (player-name rp) +client-read-timeout+)))))
+
+          (if (game-end? g)
+              (progn
+                (v:info :game "ゲーム終了。~a" (make-ranking-data g))
+                (game-broadcast-result g)
+                (game-close-connections g)
+                (setf g (new-game))
+                (setf turn-start-time nil)
+                (setf app-func #'player-registration))
+            (progn
+              (try-read-remote-commands g)
+              ;; ゲーム状態の更新。
+              (when (every #'player-command (remove-if #'player-dead? (game-players g)))
+                (game-move-players g)
+                (dolist (p (game-players g))
+                  (setf (player-command p) nil)) ;; プレーヤーのコマンドをクリア.
+                (game-encount g) ;; 敵につっこんで死亡。
+                ;; 全員死んでる状態で敵AIを動かすとコケるので。
+                (when (not (every #'player-dead? (game-players g)))
+                  (game-move-hunters g)
+                  (game-encount g)) ;; 敵がつっこんできて死亡。
+                ;; 敵を湧かす？
+                ;; (when (zerop (mod (game-turn g) 20))
+                ;;     (game-add-hunter g))
+                (incf (game-turn g))
+                (game-broadcast-map g)
+                (setf turn-start-time (get-internal-real-time)))))))
+
+      (setf *random-state* (make-random-state t))
+      (setf app-func #'player-registration)
+
+      ;;ループ
+      (loop
+       (funcall app-func)
+       (sleep 0.05)))))
 
 ;;プレイヤーorハンターの場所更新
 (defun update-actor-pos (p x y)
