@@ -1,9 +1,4 @@
-(ql:quickload '(:jonathan :cl-ppcre :ltk))
 
-(defpackage clilin
-   (:use :common-lisp :cl-user :ltk :sb-bsd-sockets)
-   (:export #:gui-cli))
-(in-package :clilin)
 
 (defun looks-like-ip (str)
   (every (lambda (c)
@@ -26,7 +21,8 @@
                   (return-from make-socket-stream nil))))))
 
     (if (ignore-errors (socket-connect sock addr port) t)
-        (socket-make-stream sock :input t :output t :element-type 'character)
+	;;element-typeをdefaultにすると文字とバイナリがつかえるらしい(sbcl)
+        (socket-make-stream sock :input t :output t :element-type :default)
       nil)))
 
 ;; 文字列をキーとする連想リストの各値をキーと同名の変数に束縛する。
@@ -88,8 +84,10 @@
 (defun read-message (stream)
   (jonathan:parse (read-line stream) :as :alist))
 
+;; (defun message-type (message)
+;;   (intern (map 'string #'char-upcase (lookup "type" message))))
 (defun message-type (message)
-  (intern (map 'string #'char-upcase (lookup "type" message))))
+  (lookup "type" message))
 
 ;;GUI
 (defun gui-cli ()
@@ -117,7 +115,7 @@
                    (gamen (make-instance 'label :master fr1 :text "hoge"
                                          :font "Takaoゴシック 14 normal"))
                    (addr (make-instance 'entry :master lf1 :width 13 :text "127.0.0.1"))
-                   (port (make-instance 'entry :master lf2 :width 7 :text "9999"))
+                   (port (make-instance 'entry :master lf2 :width 7 :text "12121"))
                    (name (make-instance 'entry :master lf3 :width 12 :text "もげ")))
 
               (pack (list f f2))
@@ -172,15 +170,19 @@
 
                     (if (listen stream)
                         (progn
-                          (let ((message (read-message stream)))
-                            (case (message-type message)
-                              (status
+                          (let* ((message (read-message stream))
+				 (mes (message-type message)))
+			    ;;(case (message-type message)
+			    ;;save-lisp-and-dieで作った実行ファイルだとエラーがでるので
+			    ;;文字列比較にした
+			    (cond
+                              ((string= mes "status")
                                (display-status message)
                                (after 50 #'wait-game-start))
-                              (map
+                              ((string= mes "map")
                                (display-map message)
                                (after-idle #'send-command))
-                              (otherwise
+                              (t
                                (error (format nil "予期しないメッセージタイプ: ~s"
                                               (message-type message)))))))
                       (after 50 #'wait-game-start)))
@@ -201,19 +203,20 @@
 
                     (if (listen stream)
                         (progn
-                          (let ((message (read-message stream)))
-                            (case (message-type message)
-                              (map
+                          (let* ((message (read-message stream))
+				 (mes (message-type message)))
+                            (cond
+                              ((string= mes "map")
                                (display-map message)
                                (if (am-i-dead? message)
                                    (progn
                                      (after 50 #'wait-map))
                                  (progn
                                    (after-idle #'send-command))))
-                              (result
+                              ((string= mes "result")
                                (display-result message)
                                (configure start-btn :state :normal))
-                              (otherwise
+                              (t
                                (error (format nil "予期しないメッセージタイプ: ~s"
                                               (message-type message)))))))
                       (after 50 #'wait-map))))
@@ -224,8 +227,9 @@
 
                       (if stream
                           (progn
-
-                            (format stream "~a~%" (text name))
+			    ;;改行追加
+                            (loop for byte across (babel:string-to-octets (format nil "~A~%" (text name)) :encoding :utf-8) do
+			      (write-byte byte stream))
                             (force-output stream)
 
                             (setf id (parse-integer (read-line stream)))
@@ -251,4 +255,3 @@
               ;;ループ
               (mainloop)))))
 
-(gui-cli)
