@@ -478,7 +478,7 @@
                 (when (and (not (player-dead? rp))
                            (not (player-command rp)))
                   (game-kill-player g rp)
-                  (remote-player-close-stream rp)
+                  ;;(remote-player-close-stream rp)
                   (v:error :game "プレーヤー~aから~a秒以内にコマンドを受けとれなかったので死亡扱い。" (player-name rp) +client-read-timeout+)))))
 
           (if (game-end? g)
