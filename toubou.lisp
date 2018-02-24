@@ -233,7 +233,7 @@
         (addr (make-inet-address "0.0.0.0")))
     (setf (sockopt-reuse-address s) t)
     (setf (non-blocking-mode s) t)
-    (socket-bind s addr 9999)
+    (socket-bind s addr 12121)
     (socket-listen s 5)
     (v:info :server "~aで接続受け付け開始。" (socket-name-string s))
     s))
@@ -269,17 +269,41 @@
     (v:error :network "~aとの接続をクローズ時にストリームエラー。" (player-name rp)))))
 
 ;; handshake-error が発生する。
+;; (defmethod remote-player-receive-name (rp)
+;;   (handler-case
+;;    (let ((name (chomp (read-line (remote-player-stream rp)))))
+;;      (when (equal name "")
+;;        (v:error :network "AIの名前が空です。")
+;;        (error 'handshake-error))
+;;      (setf (player-name rp) name
+;;            (player-atama rp) (atama-of name)))
+;;    (end-of-file (c)
+;;                 (v:error :network "~A" c)
+;;      (error 'handshake-error))))
+
 (defmethod remote-player-receive-name (rp)
-  (handler-case
-   (let ((name (chomp (read-line (remote-player-stream rp)))))
-     (when (equal name "")
-       (v:error :network "AIの名前が空です。")
-       (error 'handshake-error))
-     (setf (player-name rp) name
-           (player-atama rp) (atama-of name)))
-   (end-of-file (c)
-                (v:error :network "~A" c)
-                (error 'handshake-error))))
+  (let ((len 0) (product nil) (name ""))
+    (flet ((make-res-string (len product)
+             (babel:octets-to-string
+              (make-array len :element-type '(unsigned-byte 8) :initial-contents (nreverse product))
+              :encoding :utf-8)))
+      (handler-case
+	  (let ((byte (read-byte (remote-player-stream rp) nil nil)))
+	    (loop until (or (null byte) (= byte 10)) do
+	      (push byte product)
+	      (incf len)
+	      (setf byte (read-byte (remote-player-stream rp) nil nil)))
+	    ;;(format t "~S~%" product)
+	    
+	    (setf name (make-res-string len product))
+	    (when (equal name "")
+	      (v:error :network "AIの名前が空です。")
+	      (error 'handshake-error))
+	    (setf (player-name rp) name
+		  (player-atama rp) (atama-of name)))
+	(end-of-file (c)
+	  (v:error :network "~A" c)
+	  (error 'handshake-error))))))
 
 (defmethod remote-player-send-id (player)
   (format (remote-player-stream player) "~a~%" (player-id player))
@@ -287,7 +311,7 @@
 
 (defmethod remote-player-send-message ((rp remote-player) data)
   (when (remote-player-stream rp)
-    (let ((json (jonathan:to-json data)))
+  (let ((json (jonathan:to-json data)))
       (format (remote-player-stream rp) "~a~%" json)
       (finish-output (remote-player-stream rp)))))
 
@@ -402,7 +426,7 @@
               (let* ((stream (socket-make-stream client
                                                  :input t
                                                  :output t
-                                                 :element-type 'character
+                                                 :element-type :default
                                                  :timeout +client-read-timeout+))
                      (player (make-remote-player :stream stream :socket client)))
                 (handler-case
@@ -478,8 +502,8 @@
                   (game-move-hunters g)
                   (game-encount g)) ;; 敵がつっこんできて死亡。
                 ;; 敵を湧かす？
-                ;; (when (zerop (mod (game-turn g) 20))
-                ;;     (game-add-hunter g))
+                 (when (zerop (mod (game-turn g) 20))
+                     (game-add-hunter g))
                 (incf (game-turn g))
                 (game-broadcast-map g)
                 (setf turn-start-time (get-internal-real-time)))))))
