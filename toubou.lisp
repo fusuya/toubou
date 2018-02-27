@@ -1,5 +1,10 @@
 (load "ai-ido.lisp")
 
+(defstruct donjon
+  (map nil)  ;;マップ
+  (tate 13)  ;;縦幅
+  (yoko 13)) ;;横幅
+
 ;; ゲームの状態。
 (defstruct game
   (donjon (make-donjon)) ;; マップ
@@ -26,7 +31,7 @@
 (defparameter *player-id-pos* '((1 1) (11 1) (1 11) (11 11)))
 
 (defconstant +client-read-timeout+ 10)
-(defconstant +registration-timeout+ 30) ;;一人目の参加から何秒でゲームを開始するか。
+(defconstant +registration-timeout+ 120) ;;一人目の参加から何秒でゲームを開始するか。
 
 (defstruct actor
   (posy 1)
@@ -46,10 +51,7 @@
   (socket nil)
   (stream nil))
 
-(defstruct donjon
-  (map nil)  ;;マップ
-  (tate 13)  ;;縦幅
-  (yoko 13)) ;;横幅
+
 
 ;;---------------------------------------------------------------------------------------
 
@@ -144,6 +146,7 @@
         (return-from encount-enemy t)))
   nil)
 
+#|
 ;;マップ表示
 (defmethod game-show ((g game) out)
   (labels ((show-turn
@@ -174,6 +177,20 @@
     (show-turn)
     (show-map)
     (show-players)))
+|#
+
+;;プレイヤーorハンターの場所更新
+(defun update-actor-pos (p x y)
+  (incf (actor-posy p) y)
+  (incf (actor-posx p) x))
+
+;;移動後のマップ更新
+(defun update-map (map actor y x)
+  (case (aref (donjon-map map) (+ (actor-posy actor) y) (+ (actor-posx actor) x))
+    (30 ;;壁
+     )
+    (otherwise
+     (update-actor-pos actor x y))))
 
 (defun update-ais (hunter-list map-data map)
   (dolist (hunter hunter-list)
@@ -195,10 +212,30 @@
           (player-posy player) (second pos))
     (setf (game-players g) (append (game-players g) (list player)))))
 
+(defmethod remote-player-close-stream ((rp remote-player))
+  (handler-case
+   (if (remote-player-stream rp)
+       (progn
+         (close (remote-player-stream rp))
+         (setf (remote-player-stream rp) nil))
+     (v:info :network "プレーヤー~aの存在しないストリームを閉じようとしました。"
+             (player-name rp)))
+   (sb-int:simple-stream-error
+    (c)
+    (declare (ignore c))
+
+    (v:error :network "~aとの接続をクローズ時にストリームエラー。" (player-name rp)))))
+
+(defun game-remote-players (g)
+  (remove-if-not #'remote-player-p (game-players g)))
+
 ;; リモートプレーヤーとの接続を切る。ゲーム終了時の後処理。
 (defun game-close-connections (g)
   (dolist (rp (game-remote-players g))
     (remote-player-close-stream rp)))
+
+(defun game-kill-player (g p)
+  (setf (player-last-turn-alive p) (game-turn g)))
 
 ;; 敵とプレーヤーの接触判定。当たると死ぬ。
 (defun game-encount (g)
@@ -228,6 +265,16 @@
                      :name "ハンター" :atama "ハ")
         (game-hunters g)))
 
+(defun socket-name-string (sock)
+  (multiple-value-bind (addr port)
+      (socket-name sock)
+    (format nil "~a.~a.~a.~a:~a"
+            (aref addr 0)
+            (aref addr 1)
+            (aref addr 2)
+            (aref addr 3)
+            port)))
+
 (defun make-server-socket ()
   (let ((s (make-instance 'inet-socket :type :stream :protocol :tcp))
         (addr (make-inet-address "0.0.0.0")))
@@ -254,19 +301,6 @@
    (equal "DOWN" str)
    (equal "STAY" str)))
 
-(defmethod remote-player-close-stream ((rp remote-player))
-  (handler-case
-   (if (remote-player-stream rp)
-       (progn
-         (close (remote-player-stream rp))
-         (setf (remote-player-stream rp) nil))
-     (v:info :network "プレーヤー~aの存在しないストリームを閉じようとしました。"
-             (player-name rp)))
-   (sb-int:simple-stream-error
-    (c)
-    (declare (ignore c))
-
-    (v:error :network "~aとの接続をクローズ時にストリームエラー。" (player-name rp)))))
 
 ;; handshake-error が発生する。
 ;; (defmethod remote-player-receive-name (rp)
@@ -326,6 +360,8 @@
       (return-from check-atama t)))
   nil)
 
+
+
 ;; リモートプレーヤーから届いているコマンドを受け取る。
 (defun try-read-remote-commands (g)
   (dolist (rp (game-remote-players g))
@@ -348,19 +384,6 @@
               (remote-player-close-stream rp)
               (game-kill-player g rp))))))))
 
-;;リモートプレーヤーにゲーム状態のJSONを送る。
-(defun game-broadcast-map (g)
-  (game-broadcast-message g (make-map-data g)))
-
-(defun socket-name-string (sock)
-  (multiple-value-bind (addr port)
-      (socket-name sock)
-    (format nil "~a.~a.~a.~a:~a"
-            (aref addr 0)
-            (aref addr 1)
-            (aref addr 2)
-            (aref addr 3)
-            port)))
 
 (defun socket-peername-string (sock)
   (multiple-value-bind (addr port)
@@ -387,6 +410,10 @@
       (declare (ignore c))
 
       (v:error :network "~aへのメッセージ送信時にストリームエラー。" (player-name rp))))))
+
+;;リモートプレーヤーにゲーム状態のJSONを送る。
+(defun game-broadcast-map (g)
+  (game-broadcast-message g (make-map-data g)))
 
 (defun make-ranking-data (g)
   (flet ((ranking-item
@@ -418,12 +445,6 @@
   
 (defun game-end? (g)
   (every #'player-dead? (game-players g)))
-
-(defun game-kill-player (g p)
-  (setf (player-last-turn-alive p) (game-turn g)))
-
-(defun game-remote-players (g)
-  (remove-if-not #'remote-player-p (game-players g)))
 
 (defun server-main ()
   (let* ((server-socket (make-server-socket))
@@ -544,10 +565,7 @@
        (funcall app-func)
        (sleep 0.05)))))
 
-;;プレイヤーorハンターの場所更新
-(defun update-actor-pos (p x y)
-  (incf (actor-posy p) y)
-  (incf (actor-posx p) x))
+
 
 ;;マップ設定
 (defun set-map (map p moto)
@@ -558,10 +576,3 @@
 		(player-posy p) i))
       (setf (aref (donjon-map map) i j) (aref moto i j)))))
 
-;;移動後のマップ更新
-(defun update-map (map actor y x)
-  (case (aref (donjon-map map) (+ (actor-posy actor) y) (+ (actor-posx actor) x))
-    (30 ;;壁
-     )
-    (otherwise
-     (update-actor-pos actor x y))))
