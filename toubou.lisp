@@ -105,10 +105,10 @@
 
 (defun player-list (p)
   `(:|id| ,(player-id p)
-     :|name| ,(player-name p)
-     :|atama| ,(player-atama p)
-     :|pos| (:|x| ,(player-posx p) :|y| ,(player-posy p))
-     :|dead| ,(json-true-false (player-dead? p))))
+    :|name| ,(player-name p)
+    :|atama| ,(player-atama p)
+    :|pos| (:|x| ,(player-posx p) :|y| ,(player-posy p))
+    :|dead| ,(json-true-false (player-dead? p))))
 
 (defun map-data-list (map)
   (let ((blocks nil)
@@ -315,6 +315,17 @@
       (format (remote-player-stream rp) "~a~%" json)
       (finish-output (remote-player-stream rp)))))
 
+(defun remote-player-send-name-error (rp)
+  (format (remote-player-stream rp) "change-name~%")
+  (finish-output (remote-player-stream rp)))
+
+;;名前の頭文字がかぶってないかチェック
+(defun check-atama (g player)
+  (dolist (p (game-players g))
+    (when (equal (player-atama p) (player-atama player))
+      (return-from check-atama t)))
+  nil)
+
 ;; リモートプレーヤーから届いているコマンドを受け取る。
 (defun try-read-remote-commands (g)
   (dolist (rp (game-remote-players g))
@@ -394,6 +405,17 @@
 (defun game-broadcast-status (g timeout-seconds)
   (game-broadcast-message g `(:|type| "status" :|timeout-seconds| ,timeout-seconds :|map| ,(make-map-data g))))
 
+;;頭文字が被ってたときに送るやつ
+(defun game-broadcast-change-name (g rp timeout-seconds)
+  (handler-case
+      (remote-player-send-message rp `(:|type| "change-name" :|timeout-seconds| ,timeout-seconds :|map| ,(make-map-data g)))
+  (sb-int:simple-stream-error
+      (c)
+      (declare (ignore c))
+
+      (v:error :network "~aへのメッセージ送信時にストリームエラー。" (player-name rp)))))
+
+  
 (defun game-end? (g)
   (every #'player-dead? (game-players g)))
 
@@ -446,6 +468,12 @@
                   (remote-player-close-stream player)
                   (return-from player-registration)))
                 ;; XXX: 同名のプレーヤーは登録しない措置が必要か。
+                (when (check-atama g player) ;;名前の頭文字がかぶってないか判定
+                  (let ((timeout (- +registration-timeout+
+                                    (truncate (- (get-internal-real-time) first-registration-time) internal-time-units-per-second))))
+                    (game-broadcast-change-name g player timeout)
+                    (return-from player-registration)))
+                
                 (game-add-player g player)
                 (when (not first-registration-time)
                   (setf first-registration-time (get-internal-real-time)))

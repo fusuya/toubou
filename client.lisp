@@ -223,24 +223,35 @@
 
               (setf (command start-btn)
                     (lambda ()
-                      (setf stream (make-socket-stream (text addr) (parse-integer (text port))))
-
-                      (if stream
-                          (progn
-			    ;;改行追加
-                            (loop for byte across (babel:string-to-octets (format nil "~A~%" (text name)) :encoding :utf-8) do
-			      (write-byte byte stream))
-                            (force-output stream)
-
-                            (setf id (parse-integer (read-line stream)))
-
-                            (setf (text gamen)
-                                  "受付完了：ゲーム開始待ち中")
-
-                            (configure start-btn :state :disabled)
-                            (after-idle #'wait-game-start))
-                        (progn
-                          (do-msg "接続に失敗。")))))
+                      (cond
+                        ((equal "" (format nil "~A" (text name)))
+                         (do-msg "名前を入力してください。"))
+                        ((equal "" (format nil "~A" (text addr)))
+                         (do-msg "アドレスを入力してください。"))
+                        ((equal "" (format nil "~A" (text port)))
+                         (do-msg "ポートを入力してください"))
+                        (t
+                         (setf stream (make-socket-stream (text addr) (parse-integer (text port))))
+                            
+                         (if stream
+                             (progn
+                               ;;改行追加
+                               (loop for byte across (babel:string-to-octets (format nil "~A~%" (text name)) :encoding :utf-8) do
+                                        (write-byte byte stream))
+                               (force-output stream)
+                               (let ((mes (read-line stream)))
+                                 (if (= 1 (length mes))
+                                     (progn
+                                       (setf id (parse-integer mes))
+                                       (setf (text gamen)
+                                             "受付完了：ゲーム開始待ち中")
+                                       (configure start-btn :state :disabled)
+                                       (after-idle #'wait-game-start))
+                                     (let ((message (jonathan:parse mes :as :alist)))
+                                       (display-status message)
+                                       (do-msg "頭文字が違う名前に変更してください。")))))
+                             (progn
+                               (do-msg "接続に失敗。")))))))
 
               ;;キー入力イベント
               (mapc (lambda (key cmd)
