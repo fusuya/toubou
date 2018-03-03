@@ -13,25 +13,57 @@
   (turn 1))              ;; 何ターン目か
 
 (defparameter *map*
-  #2A((30 30 30 30 30 30 30 30 30 30 30 30 30)
-      (30  0  0  0  0  0  0  0  0  0  0  0 30)
-      (30  0 30 30  0  0 30  0  0 30 30  0 30)
-      (30  0 30  0  0  0  0  0  0  0 30  0 30)
-      (30  0  0  0 30 30  0 30 30  0  0  0 30)
-      (30  0  0  0 30  0  0  0 30  0  0  0 30)
-      (30  0 30  0  0  0  5  0  0  0 30  0 30)
-      (30  0  0  0 30  0  0  0 30  0  0  0 30)
-      (30  0  0  0 30 30  0 30 30  0  0  0 30)
-      (30  0 30  0  0  0  0  0  0  0 30  0 30)
-      (30  0 30 30  0  0 30  0  0 30 30  0 30)
-      (30  0  0  0  0  0  0  0  0  0  0  0 30)
-      (30 30 30 30 30 30 30 30 30 30 30 30 30)))
+   #2A((30 30 30 30 30 30 30 30 30 30 30 30 30)
+       (30  0  0  0  0  0  0  0  0  0  0  0 30)
+       (30  0 30 30  0  0 30  0  0 30 30  0 30)
+       (30  0 30  0  0  0  0  0  0  0 30  0 30)
+       (30  0  0  0 30 30  0 30 30  0  0  0 30)
+       (30  0  0  0 30  0  0  0 30  0  0  0 30)
+       (30  0 30  0  0  0  5  0  0  0 30  0 30)
+       (30  0  0  0 30  0  0  0 30  0  0  0 30)
+       (30  0  0  0 30 30  0 30 30  0  0  0 30)
+       (30  0 30  0  0  0  0  0  0  0 30  0 30)
+       (30  0 30 30  0  0 30  0  0 30 30  0 30)
+       (30  0  0  0  0  0  0  0  0  0  0  0 30)
+       (30 30 30 30 30 30 30 30 30 30 30 30 30)))
+
+(defparameter *map2*
+  #2A((30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30)
+      (30  0  0  0  0  0  0  0  0  0  0  0  0  0  0 30)
+       (30  0 30  0 30  0 30 30 30  0 30 30  0 30  0 30)
+       (30  0 30  0  0  0  0  0  0  0  0  0  0 30  0 30)
+       (30  0  0  0 30  0 30  0 30  0 30 30  0  0  0 30)
+       (30  0 30  0  0  0  0  0  0  0  0  0  0 30  0 30)
+       (30  0  0  0  0 30  0  0  0 30  0 30  0  0  0 30)
+       (30  0  0  0  0 30  0  0  0 30  0  0  0  0  0 30)
+       (30 30 30  0  0  0  0  5  0  0  0  0  0 30 30 30)
+       (30  0  0  0  0 30  0  0  0 30  0  0  0  0  0 30)
+       (30  0  0  0  0 30  0  0  0 30  0 30  0  0  0 30)
+       (30  0 30  0  0  0  0  0  0  0  0  0  0 30  0 30)
+       (30  0  0  0 30 30  0  0  0  0  0  0  0  0  0 30)
+       (30  0 30  0 30 30  0 30 30 30  0 30  0 30  0 30)
+       (30  0  0  0  0  0  0  0  0  0  0  0  0  0  0 30)
+       (30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30)))
+
+(defparameter *maps* (list *map* *map2*))
+
+(defun search-su (tate yoko map)
+  (loop for y from 0 below tate do
+        (loop for x from 0 below yoko do
+              (if (= (aref map y x) 5)
+                  (return-from search-su (cons x y))))))
+
+;;プレイヤーの初期位置リスト作成
+(defun player-init-pos (d)
+  (let ((tate (donjon-tate d))
+        (yoko (donjon-yoko d)))
+    (list (list 1 1) (list 1 (- tate 2)) (list (- yoko 2) 1) (list (- yoko 2) (- tate 2)))))
 
 ;; プレーヤーの初期位置。5人目が参加するときっとクラッシュする。
 (defparameter *player-id-pos* '((1 1) (11 1) (1 11) (11 11)))
 
 (defconstant +client-read-timeout+ 10)
-(defconstant +registration-timeout+ 120) ;;一人目の参加から何秒でゲームを開始するか。
+(defconstant +registration-timeout+ 12) ;;一人目の参加から何秒でゲームを開始するか。
 
 (defstruct actor
   (posy 1)
@@ -206,7 +238,8 @@
 ;; プレーヤーを参加させる。ここでIDを割り当てる。
 (defun game-add-player (g player)
   (let* ((id (length (game-players g)))
-         (pos (nth id *player-id-pos*)))
+         (player-id-pos (player-init-pos (game-donjon g)))
+         (pos (nth id player-id-pos)))
     (setf (player-id player) id)
     (setf (player-posx player) (first pos)
           (player-posy player) (second pos))
@@ -261,9 +294,14 @@
     (update-ais (game-hunters g) map-data (game-donjon g))))
 ;; ハンターが巣から出てくる。
 (defun game-add-hunter (g)
-  (push (make-hunter :id (length (game-hunters g)) :posx 6 :posy 6
+  (let* ((don (game-donjon g))
+         (map (donjon-map don))
+         (tate (donjon-tate don))
+         (yoko (donjon-yoko don))
+         (su-pos (search-su tate yoko map)))
+  (push (make-hunter :id (length (game-hunters g)) :posx (car su-pos) :posy (cdr su-pos)
                      :name "ハンター" :atama "ハ")
-        (game-hunters g)))
+        (game-hunters g))))
 
 (defun socket-name-string (sock)
   (multiple-value-bind (addr port)
@@ -396,8 +434,13 @@
             port)))
 
 (defun new-game ()
-  (let ((first-hunter (make-hunter :id 0 :name "ハンター" :posx 6 :posy 6 :atama "ハ")))
-    (make-game :donjon (make-donjon :map *map*)
+  (let* ((map (nth (random (length *maps*)) *maps*))
+         (tate (car (array-dimensions map)))
+         (yoko (cadr (array-dimensions map)))
+         (su-pos (search-su tate yoko map))
+         (first-hunter (make-hunter :id 0 :name "ハンター" :posx (car su-pos)
+                                    :posy (cdr su-pos) :atama "ハ")))
+    (make-game :donjon (make-donjon :map map :tate tate :yoko yoko)
                :hunters (list first-hunter))))
 
 (defun game-broadcast-message (g data)
